@@ -1,5 +1,6 @@
 import os
 import glob
+import subprocess
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -16,8 +17,8 @@ from sklearn.metrics import r2_score, root_mean_squared_error
 repo_dir = "tmqm"
 
 if not os.path.exists(repo_dir):
-    print("Cloning tmQM repository directly into Colab environment...")
-    !git clone https://github.com/uiocompcat/tmqm.git
+    print("Cloning tmQM repository...")
+    subprocess.run(["git", "clone", "https://github.com/uiocompcat/tmqm.git"], check=True)
 else:
     print("tmQM repository already cloned.")
 
@@ -27,7 +28,6 @@ csv_files = glob.glob("tmqm/**/*.csv", recursive=True) + glob.glob("tmqm/**/*.tx
 df_list = []
 for file in csv_files:
     try:
-        # Check separators commonly used (semicolon or tab/space)
         temp_df = pd.read_csv(file, sep=';')
         if len(temp_df.columns) <= 1:
             temp_df = pd.read_csv(file, sep=r'\s+')
@@ -35,14 +35,17 @@ for file in csv_files:
     except Exception:
         continue
 
+if not df_list:
+    raise FileNotFoundError("No property CSV/TXT files found inside the tmqm repository.")
+
 df = pd.concat(df_list, ignore_index=True).drop_duplicates()
 print(f"Successfully aggregated dataset from repository files. Total Rows: {len(df)}")
 
-# Standardize column names (lowercase strip)
+# Standardize column names
 col_map = {c: c.strip() for c in df.columns}
 df.rename(columns=col_map, inplace=True)
 
-# Dynamically identify target column or calculate HOMO-LUMO Gap
+# Identify target column or calculate HOMO-LUMO Gap
 target_col = None
 possible_gap_cols = ['HOMO_LUMO_Gap', 'Gap', 'HOMO-LUMO_gap', 'gap']
 
@@ -61,13 +64,12 @@ if target_col is None:
         print(f"Calculated HOMO-LUMO Gap using columns: {lumo_col} - {homo_col}")
 
 if target_col is None or target_col not in df.columns:
-    print("Warning: Target gap column not found in repository CSVs. Initializing target array from dataset energy features...")
+    print("Warning: Target gap column not found. Initializing target array from numeric energy features...")
     numeric_cols = df.select_dtypes(include=[np.number]).columns
     if len(numeric_cols) >= 2:
         df['HOMO_LUMO_Gap'] = df[numeric_cols[1]] - df[numeric_cols[0]]
         target_col = 'HOMO_LUMO_Gap'
 
-# Remove rows where the target metric is NaN
 df = df.dropna(subset=[target_col]).copy()
 
 # ==============================================================================
@@ -88,14 +90,12 @@ df_encoded.to_csv("clean_tmqm.csv", index=False)
 # ==============================================================================
 # 3. BENCHMARK MODEL TRAINING
 # ==============================================================================
-# Drop identifiers, target leakage variables, and target column from feature matrix X
 leakage_candidates = ['HOMO', 'LUMO', 'Gap', 'CSD', 'code', 'identifier', 'id', 'CSD_code', target_col]
 drop_cols = [c for c in df_encoded.columns if any(leak in c for leak in leakage_candidates)]
 
 X = df_encoded.select_dtypes(include=[np.number]).drop(columns=[c for c in drop_cols if c in df_encoded.columns], errors='ignore')
 y = df_encoded[target_col].values
 
-# Clean feature set from remaining NaN / Inf values
 X = X.fillna(X.mean()).replace([np.inf, -np.inf], 0)
 
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -140,14 +140,14 @@ plt.close()
 # 4. UNIFIED ACS PARITY PLOT GENERATION
 # ==============================================================================
 sns.set_theme(style="ticks")
-plt.rcParams['font.family'] = 'DejaVu Sans'
+plt.rcParams['font.family'] = 'sans-serif'
 plt.rcParams['font.weight'] = 'bold'
 plt.rcParams['axes.labelweight'] = 'bold'
 plt.rcParams['axes.titleweight'] = 'bold'
 plt.rcParams['axes.edgecolor'] = '#000000'
 plt.rcParams['axes.linewidth'] = 1.0
 
-def plot_acs_unified_parity(y_true, y_pred, title, filename, r2_score_val, point_color, line_color):
+def plot_acs_unified_parity(y_true, y_pred, title, filename, r2_score_val, point_color, line_color, ylabel='Predicted Gap (eV)'):
     fig, ax = plt.subplots(figsize=(3.5, 3.2), dpi=300)
     ax.scatter(y_true, y_pred, color=point_color, alpha=0.50, s=16, edgecolors='black', linewidths=0.2, rasterized=True)
     
@@ -167,7 +167,7 @@ def plot_acs_unified_parity(y_true, y_pred, title, filename, r2_score_val, point
     )
 
     ax.set_xlabel('DFT HOMO-LUMO Gap (eV)', fontsize=9, fontweight='bold', labelpad=6)
-    ax.set_ylabel('XGBoost Predicted Gap (eV)', fontsize=9, fontweight='bold', labelpad=6)
+    ax.set_ylabel(ylabel, fontsize=9, fontweight='bold', labelpad=6)
     ax.set_title(title, fontsize=10, fontweight='bold', pad=8)
     ax.tick_params(axis='both', which='major', labelsize=8, width=1.0, length=4)
     ax.grid(True, linestyle=':', alpha=0.5, color='#888888')
@@ -189,7 +189,8 @@ plot_acs_unified_parity(
     "real_parity_plot.png", 
     r2_score(y_test, y_pred_real), 
     '#1f77b4', 
-    '#d62728'
+    '#d62728',
+    ylabel='XGBoost Predicted Gap (eV)'
 )
 
 print("\nPipeline execution complete. All figures and model benchmarks generated successfully.")
